@@ -1,0 +1,283 @@
+#
+# This is a Shiny web application. You can run the application by clicking
+# the 'Run App' button above.
+#
+# Find out more about building applications with Shiny here:
+#
+#    http://shiny.rstudio.com/
+#
+
+library(shiny)
+library(RCurl)
+library(XML)
+library(stringi)
+library(data.table)  
+library(plotly)
+
+# Define UI for application that draws a histogram
+ui <- fluidPage(
+   
+   # Application title
+   titlePanel("Old Faithful Geyser Data"),
+   
+   # Sidebar with a slider input for number of bins 
+   sidebarLayout(
+      sidebarPanel(
+        selectInput("language", "Language:", c("German", "English"), selected = "German"),
+        selectInput("cube", "Source:", c("SurvStat"), selected = "SurvStat"),
+        uiOutput("hierarchies"),
+        uiOutput("facet")
+      ),
+      
+      # Show a plot of the generated distribution
+       mainPanel(
+          plotlyOutput("countPlot")
+      )
+   )
+)
+
+#author: MP
+#Sys.setenv(HTTPS_Proxy = "http://fw-bln.rki.ivbb.bund.de:8020")
+##### functions
+# method to recieve the xml from the WebService
+# parameter: body_ : the xml request,  service_ : the WebService method
+getXMLFromWebService <- function(body_,service_){
+  
+  # URL to the WebService
+  webServiceUrl <- "https://tools.rki.de/SurvStat/SurvStatWebService.svc"
+  
+  bodyLength <- nchar( stri_enc_toutf8(body_, is_unknown_8bit = FALSE, validate = FALSE))
+  
+  # Header Fields for the post  
+  headerFields =
+    c(Accept = "text/xml",
+      Accept = "multipart/*",
+      'Content-Length' = bodyLength,
+      'Content-Type' = "application/soap+xml; charset=utf-8", # Extern tools.rki.de
+      SOAPaction = paste0("http://tools.rki.de/SurvStat/SurvStatWebService/", service_))
+  
+  #Gatherer Object to recieve response xml
+  reader = basicTextGatherer()
+  
+  # performe the request
+  result <- curlPerform(url = webServiceUrl,
+                        httpheader = headerFields,
+                        postfields = body_,
+                        writefunction = reader$update,
+                        verbose = TRUE
+  )
+  
+  # parse the response xml 
+  doc_x <- xmlParse(reader$value(), encoding="UTF-8")
+  
+  #return xml 
+  return(doc_x)
+}
+
+#General variables 
+#language = 'German' #'German'/'English' (Case Sensitive!) 
+#cube = 'SurvStat' #'SurvStat' (Case Sensitive!)
+
+
+
+# Define server logic required to draw a histogram
+server <- function(input, output) {
+  
+  getHierarchies <- reactive({
+    #language = 'German' #'German'/'English' (Case Sensitive!) 
+    #cube = 'SurvStat' #'SurvStat' (Case Sensitive!)
+    # XML Request Body -------------EXTERN
+    body =paste0('<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:sur="http://tools.rki.de/SurvStat/" xmlns:rki="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx">
+                 <soap:Header xmlns:wsa="http://www.w3.org/2005/08/addressing">
+                 <wsa:Action>http://tools.rki.de/SurvStat/SurvStatWebService/GetAllDimensions</wsa:Action>
+                 <wsa:To>https://tools.rki.de/SurvStat/SurvStatWebService.svc</wsa:To>
+                 </soap:Header>
+                 <soap:Body>
+                 <sur:GetAllDimensions>      
+                 <sur:request>           
+                 <rki:Cube>', input$cube,'</rki:Cube>          
+                 <rki:Language>',input$language,'</rki:Language>
+                 </sur:request>
+                 </sur:GetAllDimensions> 
+                 </soap:Body>
+                 </soap:Envelope>')
+    print(body)
+    
+    # WebService method
+    service_ <- 'GetAllDimensions'
+    
+    # Call getXMLFromWebService to get response xml
+    AllDimensions <- getXMLFromWebService(body,service_)
+    
+    # Get NodeSet of all Hierarchy Nodes in the response xml
+    idNodes <- getNodeSet(AllDimensions, "//b:Hierarchy", namespaces  =  c("b" = "http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx"))
+    
+    # Build Hierarchy DataFrame
+    HierarchyDataFrame <- do.call(rbind.data.frame, lapply(idNodes, function(x) {
+      # Get the Children Nodes of the Hierarchy Node (These are its properties)
+      children <- xmlChildren(x)
+      
+      # Get the parent of the parent Node (ParentÂ² because every Hierarchy is in in Hierachies Node)
+      parent <- xmlParent(xmlParent(x))
+      
+      # Initialize the result List
+      result=list() 
+      
+      # Fill the ResultList with the Hierarchy Child "Properties"
+      result$HierarchyId <-xmlValue(children$Id)
+      result$HierarchyCaption <- xmlValue(children$Caption)
+      result$HierarchyDescription <-xmlValue(children$Description)
+      result$HierarchySelectMax <-xmlValue(children$SelectMax)
+      result$HierarchySelectMin <-xmlValue(children$SelectMin)
+      result$HierarchySort <-xmlValue(children$Sort)
+      #If Parent is a Hierarchy --> Set den Parent Hierarchy Id
+      result$HierarchyParentId = ifelse(xmlName(parent)=="Hierarchy",xmlValue(xmlChildren(parent)$Id),-1)
+      
+      #Loop until the Parent is the Dimension and set it as Dimension Parent
+      while(xmlName(parent) != "Dimension"){
+        parent  <- xmlParent(parent)
+      }
+      
+      #Get the Children Nodes (Its Properties) of the Dimenionnode
+      dimensionChilds<- xmlChildren(parent)
+      
+      # Fill the ResultList with the Dimension Child "Properties"
+      result$DimensionId <- xmlValue(dimensionChilds$Id)
+      result$DimensionCaption <- xmlValue(dimensionChilds$Caption)
+      result$DimensionDescription <- xmlValue(dimensionChilds$Description)
+      result$DimensionGroup <- xmlValue(dimensionChilds$Group)
+      result$DimensionSort <- xmlValue(dimensionChilds$Sort)
+      
+      # Return the result List
+      return(result)
+    }))
+    
+    return(HierarchyDataFrame)
+    
+  })
+  
+  output$hierarchies <- renderUI({
+    hierarchies <- getHierarchies() %>% dplyr::select(HierarchyCaption)
+    print(hierarchies)
+    selectInput("hierarchy", "X-axis", hierarchies)
+  })
+  
+  output$facet <- renderUI({
+    hierarchies <- getHierarchies() %>% dplyr::select(HierarchyCaption)
+    print(hierarchies)
+    selectInput("facet", "Facet", hierarchies)
+  })
+  
+  getOlapData <- reactive({
+    column <- getHierarchies() %>% filter(HierarchyCaption==input$hierarchy) %>% select(HierarchyId) %>% unlist() %>% as.character()
+    row <- getHierarchies() %>% filter(HierarchyCaption==input$facet) %>% select(HierarchyId) %>% unlist() %>% as.character()
+    body = paste0('<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"  xmlns:tns="http://tools.rki.de/SurvStat/" xmlns:msc="http://schemas.microsoft.com/ws/2005/12/wsdl/contract" xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd" xmlns:q1="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:q2="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:q3="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:q4="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:q5="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:q6="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:q7="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:q8="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:q9="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:q10="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:q11="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:q12="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:q13="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:q14="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:q15="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:q16="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:ser="http://schemas.microsoft.com/2003/10/Serialization/">
+<soap:Header>
+                  <wsa:To xmlns:wsa="http://www.w3.org/2005/08/addressing" xmlns="http://www.w3.org/2005/08/addressing">https://tools.rki.de/SurvStat/SurvStatWebService.svc</wsa:To>
+                  <wsa:Action xmlns:wsa="http://www.w3.org/2005/08/addressing" xmlns="http://www.w3.org/2005/08/addressing">http://tools.rki.de/SurvStat/SurvStatWebService/GetOlapResultData</wsa:Action>
+                  </soap:Header>
+                  <soap:Body>
+                  <GetOlapResultData xmlns="http://tools.rki.de/SurvStat/">
+                  <request>
+                  <q13:ColumnHierarchy xmlns:q13="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx">',column,'</q13:ColumnHierarchy>
+                  <q13:Cube xmlns:q13="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx">SurvStat</q13:Cube>
+                  <q13:HierarchyFilters xmlns:q13="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx">
+                  <q13:KeyValueOfFilterCollectionKeyFilterMemberCollectionb2rWaiIW>
+                  <q13:Key>
+                  <q13:DimensionId>[PathogenMitKrankheit].[Meldeweg Web71]</q13:DimensionId>
+                  <q13:HierarchyId>[PathogenMitKrankheit].[Meldeweg Web71].[Id Pathogen Web Web71]</q13:HierarchyId>
+                  </q13:Key>
+                  <q13:Value>
+                  <q13:string>[PathogenMitKrankheit].[Meldeweg Web71].[Meldeweg ID Web71].&amp;[1].&amp;[149].&amp;[NOV--149]</q13:string>
+                  </q13:Value>
+                  </q13:KeyValueOfFilterCollectionKeyFilterMemberCollectionb2rWaiIW>
+                  <q13:KeyValueOfFilterCollectionKeyFilterMemberCollectionb2rWaiIW>
+                  <q13:Key>
+                  <q13:DimensionId>[ReportingDate].[WeekYear]</q13:DimensionId>
+                  <q13:HierarchyId>[ReportingDate].[WeekYear].[WeekYear]</q13:HierarchyId>
+                  </q13:Key>
+                  <q13:Value>
+                  <q13:string>[ReportingDate].[WeekYear].&amp;[2016]</q13:string>
+                  <q13:string>[ReportingDate].[WeekYear].&amp;[2017]</q13:string>
+                  </q13:Value>
+                  </q13:KeyValueOfFilterCollectionKeyFilterMemberCollectionb2rWaiIW>
+                  <q13:KeyValueOfFilterCollectionKeyFilterMemberCollectionb2rWaiIW>
+                  <q13:Key>
+                  <q13:DimensionId>[Geschlecht].[SortGruppe]</q13:DimensionId>
+                  <q13:HierarchyId>[Geschlecht].[SortGruppe].[SortGruppe]</q13:HierarchyId>
+                  </q13:Key>
+                  <q13:Value>
+                  <q13:string>[Geschlecht].[SortGruppe].&amp;[1]</q13:string>
+                  <q13:string>[Geschlecht].[SortGruppe].&amp;[2]</q13:string>
+                  </q13:Value>
+                  </q13:KeyValueOfFilterCollectionKeyFilterMemberCollectionb2rWaiIW>
+                  </q13:HierarchyFilters>
+                  <q13:IncludeNullColumns xmlns:q13="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx">false</q13:IncludeNullColumns>
+                  <q13:IncludeNullRows xmlns:q13="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx">false</q13:IncludeNullRows>
+                  <q13:IncludeTotalColumn xmlns:q13="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx">false</q13:IncludeTotalColumn>
+                  <q13:IncludeTotalRow xmlns:q13="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx">false</q13:IncludeTotalRow><q13:Language xmlns:q13="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx">German</q13:Language>
+                  <q13:Measure xmlns:q13="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx">[Measures].[FallCount_71]</q13:Measure>
+                  <q13:RowHierarchy xmlns:q13="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx">',row,'</q13:RowHierarchy>
+                  </request>
+                  </GetOlapResultData>
+                  </soap:Body>
+                  </soap:Envelope>')
+    
+    # WebService method
+    service_ <- 'GetOlapResultData'
+    
+    
+    
+    
+    AllData <- getXMLFromWebService(body,service_)
+    
+    dataNodeColumnSet <- getNodeSet(AllData, "//b:Columns/b:QueryResultColumn", namespaces  =  c("b" = "http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx"))
+    columnCaptions <- lapply(dataNodeColumnSet, function(x) {
+      columnCaption <- xmlValue(getNodeSet(x, "./b:Caption", namespaces  =  c("b" = "http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx"))[[1]])
+      
+    })
+    
+    dataNodeRowSet <- getNodeSet(AllData, "//b:QueryResultRow", namespaces  =  c("b" = "http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx"))
+    rowDataSet <- do.call(rbind.data.frame, lapply(dataNodeRowSet, function(x) {
+      vals <- getNodeSet(x, "./b:Values/b:string", namespaces  =  c("b" = "http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx"))
+      lapply(vals, function(x) { as.numeric(gsub("\\.", "", xmlValue(x)))})
+    }))
+    rowCaptions <- getNodeSet(AllData, "//b:QueryResults/b:QueryResultRow/b:Caption", namespaces  =  c("b" = "http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx"))
+    rowCaptions <-lapply(rowCaptions, function(x) {xmlValue(x)})
+    
+    row.names(rowDataSet) <-rowCaptions
+    trowSet <- as.data.frame(t(rowDataSet))
+    rownames(trowSet) <- 1:nrow(trowSet)
+    
+    columnCaptionsT <- data.frame(t(data.frame(columnCaptions)))
+    names(columnCaptionsT) <- "Categories"
+    finalFrame <- data.frame(cbind(columnCaptionsT,trowSet))
+    rownames(finalFrame) <- 1:nrow(finalFrame)
+    
+    
+    data.m <- data.table::melt(finalFrame, id.vars='Categories') 
+    
+    data.m
+    
+  })
+  
+    output$countPlot <- renderPlotly({
+      # x <- c(1:100)
+      # random_y <- rnorm(100, mean = 0)
+      # data <- data.frame(x, random_y)
+      # 
+      # p <- plot_ly(data, x = ~x, y = ~random_y, type = 'scatter', mode = 'lines')
+      # p
+      
+      data.m <- getOlapData()
+      
+      p <- plot_ly(data.m, x = ~Categories, y = ~value, type = 'bar', 
+                   name = ~variable, color = ~variable) %>%
+        layout(yaxis = list(title = 'Count'), barmode = 'stack')
+      p
+        })
+}
+
+# Run the application 
+shinyApp(ui = ui, server = server)
+
