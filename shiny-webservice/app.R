@@ -18,7 +18,7 @@ library(plotly)
 ui <- fluidPage(
    
    # Application title
-   titlePanel("Old Faithful Geyser Data"),
+   titlePanel("Shiny Webservice"),
    
    # Sidebar with a slider input for number of bins 
    sidebarLayout(
@@ -26,7 +26,9 @@ ui <- fluidPage(
         selectInput("language", "Language:", c("German", "English"), selected = "German"),
         selectInput("cube", "Source:", c("SurvStat"), selected = "SurvStat"),
         uiOutput("hierarchies"),
-        uiOutput("facet")
+        uiOutput("facet"),
+        uiOutput("filter"),
+        uiOutput("filtervalue")
       ),
       
       # Show a plot of the generated distribution
@@ -83,6 +85,42 @@ getXMLFromWebService <- function(body_,service_){
 # Define server logic required to draw a histogram
 server <- function(input, output) {
   
+  getHierarchyMembers <- reactive({
+    # Select HierarchyId from the first row
+    hId <- HierarchyDataFrame %>% filter(HierarchyCaption==input$filter) %>% dplyr::select(HierarchyId) %>% unlist()
+    
+    # XML Request Body 
+    body = paste0('<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:sur="http://tools.rki.de/SurvStat/" xmlns:rki="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx">
+                  <soap:Header xmlns:wsa="http://www.w3.org/2005/08/addressing"> 
+                  <wsa:Action>http://tools.rki.de/SurvStat/SurvStatWebService/GetAllHierarchyMembers</wsa:Action>
+                  <wsa:To>https://tools.rki.de/SurvStat/SurvStatWebService.svc</wsa:To>
+                  </soap:Header>
+                  <soap:Body>
+                  <sur:GetAllHierarchyMembers>
+                  <sur:request>
+                  <rki:Cube>', input$cube,'</rki:Cube>
+                  <rki:HierarchyId>',hId,'</rki:HierarchyId>
+                  <rki:Language>', input$language,'</rki:Language>
+                  </sur:request>
+                  </sur:GetAllHierarchyMembers>
+                  </soap:Body>
+                  </soap:Envelope>')
+    
+    # XML Request Body 
+    service_ <- 'GetAllHierarchyMembers'
+    
+    # WebService method
+    AllHierarchyMembers <- getXMLFromWebService(body,service_)
+    
+    # Get NodeSet of all Hierarchy Members Nodes in the response xml
+    hierarchyMembers <- getNodeSet(AllHierarchyMembers, "//a:HierarchyMember", namespaces  =  c("a" = "http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx"))
+    
+    # Parse the XML Result to DataFrame
+    HierarchyMemberDataFrame <-xmlToDataFrame(hierarchyMembers)
+    
+    return(HierarchyMemberDataFrame)
+  })
+  
   getHierarchies <- reactive({
     #language = 'German' #'German'/'English' (Case Sensitive!) 
     #cube = 'SurvStat' #'SurvStat' (Case Sensitive!)
@@ -101,7 +139,7 @@ server <- function(input, output) {
                  </sur:GetAllDimensions> 
                  </soap:Body>
                  </soap:Envelope>')
-    print(body)
+    #print(body)
     
     # WebService method
     service_ <- 'GetAllDimensions'
@@ -158,19 +196,34 @@ server <- function(input, output) {
   
   output$hierarchies <- renderUI({
     hierarchies <- getHierarchies() %>% dplyr::select(HierarchyCaption)
-    print(hierarchies)
     selectInput("hierarchy", "X-axis", hierarchies)
   })
   
   output$facet <- renderUI({
-    hierarchies <- getHierarchies() %>% dplyr::select(HierarchyCaption)
-    print(hierarchies)
+    hierarchies <- getHierarchies() %>% dplyr::select(HierarchyCaption) %>% filter(HierarchyCaption!=input$hierarchy)
     selectInput("facet", "Facet", hierarchies)
   })
   
+  output$filter <- renderUI({
+    hierarchies <- getHierarchies() %>% dplyr::select(HierarchyCaption)
+    selectInput("filter", "Filter", hierarchies)
+  })
+  
+  output$filtervalue <- renderUI({
+    hierarchies <- getHierarchyMembers() %>% dplyr::select(Caption)
+    selectInput("filterValue", "Filterwerte", hierarchies)
+  })
+  
+  
+  
   getOlapData <- reactive({
+    
     column <- getHierarchies() %>% filter(HierarchyCaption==input$hierarchy) %>% select(HierarchyId) %>% unlist() %>% as.character()
     row <- getHierarchies() %>% filter(HierarchyCaption==input$facet) %>% select(HierarchyId) %>% unlist() %>% as.character()
+    keyDim <- getHierarchies() %>% filter(HierarchyCaption==input$filter) %>% select(DimensionId) %>% unlist() %>% as.character()
+    keyHier <- getHierarchies() %>% filter(HierarchyCaption==input$filter) %>% select(HierarchyId) %>% unlist() %>% as.character()
+    value <- getHierarchyMembers() %>% filter(Caption==input$filterValue) %>% select(Id) %>% unlist() %>% as.character() %>% gsub('&', '&amp;', .)
+    
     body = paste0('<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"  xmlns:tns="http://tools.rki.de/SurvStat/" xmlns:msc="http://schemas.microsoft.com/ws/2005/12/wsdl/contract" xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd" xmlns:q1="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:q2="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:q3="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:q4="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:q5="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:q6="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:q7="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:q8="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:q9="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:q10="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:q11="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:q12="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:q13="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:q14="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:q15="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:q16="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx" xmlns:ser="http://schemas.microsoft.com/2003/10/Serialization/">
 <soap:Header>
                   <wsa:To xmlns:wsa="http://www.w3.org/2005/08/addressing" xmlns="http://www.w3.org/2005/08/addressing">https://tools.rki.de/SurvStat/SurvStatWebService.svc</wsa:To>
@@ -184,31 +237,11 @@ server <- function(input, output) {
                   <q13:HierarchyFilters xmlns:q13="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx">
                   <q13:KeyValueOfFilterCollectionKeyFilterMemberCollectionb2rWaiIW>
                   <q13:Key>
-                  <q13:DimensionId>[PathogenMitKrankheit].[Meldeweg Web71]</q13:DimensionId>
-                  <q13:HierarchyId>[PathogenMitKrankheit].[Meldeweg Web71].[Id Pathogen Web Web71]</q13:HierarchyId>
+                  <q13:DimensionId>', keyDim ,'</q13:DimensionId>
+                  <q13:HierarchyId>', keyHier ,'</q13:HierarchyId>
                   </q13:Key>
                   <q13:Value>
-                  <q13:string>[PathogenMitKrankheit].[Meldeweg Web71].[Meldeweg ID Web71].&amp;[1].&amp;[149].&amp;[NOV--149]</q13:string>
-                  </q13:Value>
-                  </q13:KeyValueOfFilterCollectionKeyFilterMemberCollectionb2rWaiIW>
-                  <q13:KeyValueOfFilterCollectionKeyFilterMemberCollectionb2rWaiIW>
-                  <q13:Key>
-                  <q13:DimensionId>[ReportingDate].[WeekYear]</q13:DimensionId>
-                  <q13:HierarchyId>[ReportingDate].[WeekYear].[WeekYear]</q13:HierarchyId>
-                  </q13:Key>
-                  <q13:Value>
-                  <q13:string>[ReportingDate].[WeekYear].&amp;[2016]</q13:string>
-                  <q13:string>[ReportingDate].[WeekYear].&amp;[2017]</q13:string>
-                  </q13:Value>
-                  </q13:KeyValueOfFilterCollectionKeyFilterMemberCollectionb2rWaiIW>
-                  <q13:KeyValueOfFilterCollectionKeyFilterMemberCollectionb2rWaiIW>
-                  <q13:Key>
-                  <q13:DimensionId>[Geschlecht].[SortGruppe]</q13:DimensionId>
-                  <q13:HierarchyId>[Geschlecht].[SortGruppe].[SortGruppe]</q13:HierarchyId>
-                  </q13:Key>
-                  <q13:Value>
-                  <q13:string>[Geschlecht].[SortGruppe].&amp;[1]</q13:string>
-                  <q13:string>[Geschlecht].[SortGruppe].&amp;[2]</q13:string>
+                  <q13:string>', value ,'</q13:string>
                   </q13:Value>
                   </q13:KeyValueOfFilterCollectionKeyFilterMemberCollectionb2rWaiIW>
                   </q13:HierarchyFilters>
@@ -273,7 +306,7 @@ server <- function(input, output) {
       
       p <- plot_ly(data.m, x = ~Categories, y = ~value, type = 'bar', 
                    name = ~variable, color = ~variable) %>%
-        layout(yaxis = list(title = 'Count'), barmode = 'stack')
+        layout(yaxis = list(title = 'Count'),  xaxis = list(nticks = 10), barmode = 'stack', legend = list(orientation = 'h', xanchor = "center", x = 0.5))
       p
         })
 }
