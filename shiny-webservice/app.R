@@ -87,7 +87,7 @@ server <- function(input, output) {
   
   getHierarchyMembers <- reactive({
     # Select HierarchyId from the first row
-    hId <- HierarchyDataFrame %>% filter(HierarchyCaption==input$filter) %>% dplyr::select(HierarchyId) %>% unlist()
+    hId <- getHierarchies() %>% filter(HierarchyCaption==input$filter) %>% dplyr::select(HierarchyId) %>% unlist()
     
     # XML Request Body 
     body = paste0('<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:sur="http://tools.rki.de/SurvStat/" xmlns:rki="http://schemas.datacontract.org/2004/07/Rki.SurvStat.WebService.Contracts.Mdx">
