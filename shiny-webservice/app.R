@@ -38,8 +38,6 @@ ui <- fluidPage(
    )
 )
 
-#author: MP
-#Sys.setenv(HTTPS_Proxy = "http://fw-bln.rki.ivbb.bund.de:8020")
 ##### functions
 # method to recieve the xml from the WebService
 # parameter: body_ : the xml request,  service_ : the WebService method
